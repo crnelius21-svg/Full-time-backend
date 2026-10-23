@@ -1,0 +1,30 @@
+import { WebSocketServer } from "ws";
+import Redis from "ioredis";
+
+const redis = new Redis();
+const wss = new WebSocketServer({ port: 8080 });
+
+// 1. Poll the provider and push only what changed
+async function pollScores() {
+  const res = await fetch(`${PROVIDER_URL}/live`, {
+    headers: { "x-api-key": process.env.API_KEY },
+  });
+  const matches = await res.json();
+
+  for (const m of matches) {
+    const prev = await redis.get(`match:${m.id}`);
+    const next = JSON.stringify({ score: m.score, minute: m.minute });
+    if (prev !== next) {
+      await redis.set(`match:${m.id}`, next);
+      redis.publish("updates", JSON.stringify({ id: m.id, ...JSON.parse(next) }));
+    }
+  }
+}
+setInterval(pollScores, 10_000);
+
+// 2. Broadcast changes to connected clients
+const sub = new Redis();
+sub.subscribe("updates");
+sub.on("message", (_, msg) => {
+  wss.clients.forEach((c) => c.readyState === 1 && c.send(msg));
+});
